@@ -1,27 +1,12 @@
 import streamlit as st
 import sympy as sp
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib as mpl
+import plotly.graph_objects as go
 
 # ============================================================================
 # CONFIGURACIÓN DE PÁGINA Y ESTILO
 # ============================================================================
 st.set_page_config(page_title="Calculadora de Parámetros", layout="wide", page_icon="📐")
-
-# Forzamos tema oscuro en Matplotlib coherente con Streamlit dark mode
-mpl.rcParams.update({
-    "figure.facecolor": "#0e1117",
-    "axes.facecolor": "#0e1117",
-    "axes.edgecolor": "#cdd6f4",
-    "axes.labelcolor": "#cdd6f4",
-    "text.color": "#cdd6f4",
-    "xtick.color": "#cdd6f4",
-    "ytick.color": "#cdd6f4",
-    "grid.color": "#45475a",
-    "grid.alpha": 0.5,
-    "font.family": "monospace",
-})
 
 x, a, b, c, d, e = sp.symbols("x a b c d e")
 PARAM_SYMBOLS = [a, b, c, d, e]
@@ -104,7 +89,7 @@ def resolver_sistema(especificaciones, func, params):
         except Exception:
             return True
 
-    # CORRECCIÓN: usar 's' (iterador) en lugar de 'sol' (variable externa)
+    # CORRECCIÓN BUG: usar 's' (iterador) en lugar de 'sol' (variable externa)
     reales = [s for s in soluciones if es_real(s)]
 
     return reales if reales else soluciones
@@ -293,7 +278,7 @@ with col_list:
     else:
         st.info("No hay condiciones añadidas todavía.")
 
-# --- PASO 3: Resolver y Graficar ---
+# --- PASO 3: Resolver y Graficar (INTERACTIVO CON PLOTLY) ---
 st.header("3. Resolución y Gráfica")
 
 if st.button("🚀 Resolver Sistema", type="primary"):
@@ -314,6 +299,7 @@ if st.button("🚀 Resolver Sistema", type="primary"):
             for idx, sol in enumerate(soluciones):
                 st.subheader(f"Solución {idx + 1}")
 
+                # Tabla de resultados
                 tabla_data = {
                     "Parámetro": [str(p) for p in params_detected],
                     "Valor Exacto": [
@@ -332,11 +318,7 @@ if st.button("🚀 Resolver Sistema", type="primary"):
                 func_final = sp.simplify(func.subs(sol))
                 st.latex(f"f(x) = {sp.latex(func_final)}")
 
-                # --- Gráfica ---
-                fig, ax = plt.subplots(figsize=(10, 6))
-                f_lamb = sp.lambdify(x, func_final, modules=["numpy"])
-
-                # Rango automático basado en condiciones
+                # === RANGO INTERACTIVO ===
                 xs_rel = []
                 for m in metas:
                     for k in ("x", "x1", "x2"):
@@ -346,84 +328,143 @@ if st.button("🚀 Resolver Sistema", type="primary"):
                             except Exception:
                                 pass
 
-                xmin = min(xs_rel) - 5 if xs_rel else -10
-                xmax = max(xs_rel) + 5 if xs_rel else 10
+                auto_xmin = min(xs_rel) - 5 if xs_rel else -10.0
+                auto_xmax = max(xs_rel) + 5 if xs_rel else 10.0
 
-                xs_plot = np.linspace(xmin, xmax, 2000)
+                col_r1, col_r2, col_r3, col_r4, col_btn = st.columns([1, 1, 1, 1, 1])
+                with col_r1:
+                    xmin_user = st.number_input(
+                        "X mín", value=float(auto_xmin), format="%.2f",
+                        key=f"xmin_{idx}"
+                    )
+                with col_r2:
+                    xmax_user = st.number_input(
+                        "X máx", value=float(auto_xmax), format="%.2f",
+                        key=f"xmax_{idx}"
+                    )
+                with col_r3:
+                    ymin_user = st.number_input(
+                        "Y mín (vacío=auto)", value=None, format="%.2f",
+                        key=f"ymin_{idx}"
+                    )
+                with col_r4:
+                    ymax_user = st.number_input(
+                        "Y máx (vacío=auto)", value=None, format="%.2f",
+                        key=f"ymax_{idx}"
+                    )
+                with col_btn:
+                    reset = st.button("🔄 Auto", key=f"reset_{idx}")
+
+                if reset:
+                    st.rerun()
+
+                # Validar rango X
+                if xmin_user >= xmax_user:
+                    st.error("X mín debe ser menor que X máx")
+                    continue
+
+                # === GENERAR GRÁFICA PLOTLY ===
+                f_lamb = sp.lambdify(x, func_final, modules=["numpy"])
+                xs_plot = np.linspace(xmin_user, xmax_user, 3000)
 
                 try:
                     ys_plot = f_lamb(xs_plot)
                     ys_plot = np.asarray(ys_plot, dtype=float)
                     ys_plot[np.abs(ys_plot) > 1e4] = np.nan
-                    ax.plot(xs_plot, ys_plot, color="#89b4fa", linewidth=2, label="f(x)")
                 except Exception as plot_ex:
-                    st.warning(f"No se pudo graficar: {plot_ex}")
+                    st.warning(f"No se pudo evaluar la función: {plot_ex}")
+                    continue
 
-                # Marcar puntos y asíntotas sobre la gráfica
-                etiquetas_usadas = set()
+                fig = go.Figure()
 
-                def _label(nombre):
-                    if nombre in etiquetas_usadas:
-                        return None
-                    etiquetas_usadas.add(nombre)
-                    return nombre
+                # Curva principal
+                fig.add_trace(go.Scatter(
+                    x=xs_plot, y=ys_plot, mode="lines",
+                    name="f(x)", line=dict(color="#89b4fa", width=2.5)
+                ))
 
+                # Anotaciones sobre la gráfica
                 for m in metas:
                     if m["tipo"] in [
                         "Punto (x, y)", "Extremo relativo",
                         "Punto de inflexión", "Tangencia con pendiente"
-                    ]:
-                        if "x" in m:
-                            try:
-                                px = float(m["x"])
-                                py = float(m.get("y", func_final.subs(x, m["x"])))
-                                ax.plot(px, py, "o", color="#f9e2af", markersize=8, zorder=5)
-                            except Exception:
-                                pass
+                    ] and "x" in m:
+                        try:
+                            px = float(m["x"])
+                            py = float(m.get("y", func_final.subs(x, m["x"])))
+                            fig.add_trace(go.Scatter(
+                                x=[px], y=[py], mode="markers",
+                                marker=dict(size=12, color="#f9e2af", symbol="circle"),
+                                name=f"{m['tipo']} ({px:.2g}, {py:.2g})"
+                            ))
+                        except Exception:
+                            pass
 
                     if m["tipo"] == "Asíntota vertical" and "x" in m:
-                        ax.axvline(
-                            float(m["x"]), color="#f38ba8", ls="--",
-                            alpha=0.8, label=_label("As. Vertical")
+                        xv = float(m["x"])
+                        fig.add_vline(
+                            x=xv, line_dash="dash", line_color="#f38ba8",
+                            annotation_text=f"x={xv:.2g}", annotation_position="top right"
                         )
 
                     if m["tipo"] == "Asíntota horizontal" and "y" in m:
-                        ax.axhline(
-                            float(m["y"]), color="#a6e3a1", ls="--",
-                            alpha=0.8, label=_label("As. Horizontal")
+                        yh = float(m["y"])
+                        fig.add_hline(
+                            y=yh, line_dash="dash", line_color="#a6e3a1",
+                            annotation_text=f"y={yh:.2g}", annotation_position="bottom right"
                         )
 
                     if m["tipo"] == "Asíntota oblicua (límites)":
                         mm, nn = float(m["m"]), float(m["n"])
-                        ax.plot(
-                            xs_plot, mm * xs_plot + nn, color="#a6e3a1",
-                            ls="--", alpha=0.8, label=_label("As. Oblicua")
-                        )
+                        yy_ob = mm * xs_plot + nn
+                        fig.add_trace(go.Scatter(
+                            x=xs_plot, y=yy_ob, mode="lines",
+                            name=f"As. oblicua y={mm:.2g}x+{nn:.2g}",
+                            line=dict(color="#a6e3a1", width=1.5, dash="dash")
+                        ))
 
                     if m["tipo"] == "Tangencia con pendiente" and "x" in m and "m" in m:
-                        x0_tan = float(m["x"])
-                        m_tan = float(m["m"])
                         try:
-                            y0_tan = float(m.get("y", func_final.subs(x, m["x"])))
-                            yy_tan = m_tan * (xs_plot - x0_tan) + y0_tan
-                            ax.plot(
-                                xs_plot, yy_tan, color="#fab387", ls=":",
-                                linewidth=1.5, alpha=0.9, label=_label("Recta tangente")
-                            )
+                            x0_t = float(m["x"])
+                            m_t = float(m["m"])
+                            y0_t = float(m.get("y", func_final.subs(x, m["x"])))
+                            yy_tan = m_t * (xs_plot - x0_t) + y0_t
+                            fig.add_trace(go.Scatter(
+                                x=xs_plot, y=yy_tan, mode="lines",
+                                name=f"Tangente en x={x0_t:.2g}",
+                                line=dict(color="#fab387", width=1.5, dash="dot")
+                            ))
                         except Exception:
                             pass
 
-                ax.axhline(0, color="#585b70", lw=0.8)
-                ax.axvline(0, color="#585b70", lw=0.8)
-                ax.grid(True, alpha=0.3)
-                ax.set_xlabel("x")
-                ax.set_ylabel("f(x)")
+                # Estilo oscuro coherente
+                fig.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor="#0e1117",
+                    plot_bgcolor="#0e1117",
+                    font=dict(color="#cdd6f4", family="monospace"),
+                    xaxis=dict(
+                        title="x", gridcolor="#45475a", zerolinecolor="#585b70",
+                        range=[xmin_user, xmax_user]
+                    ),
+                    yaxis=dict(
+                        title="f(x)", gridcolor="#45475a", zerolinecolor="#585b70"
+                    ),
+                    legend=dict(
+                        bgcolor="rgba(14,17,23,0.8)",
+                        bordercolor="#45475a", borderwidth=1
+                    ),
+                    margin=dict(l=60, r=30, t=40, b=60),
+                    height=550
+                )
 
-                if etiquetas_usadas:
-                    ax.legend(
-                        fontsize=8, loc="best",
-                        facecolor="#0e1117", edgecolor="#45475a"
-                    )
+                # Aplicar rango Y personalizado
+                y_range = [None, None]
+                if ymin_user is not None:
+                    y_range[0] = ymin_user
+                if ymax_user is not None:
+                    y_range[1] = ymax_user
+                if y_range != [None, None]:
+                    fig.update_yaxes(range=y_range)
 
-                st.pyplot(fig)
-                plt.close(fig)
+                st.plotly_chart(fig, use_container_width=True)
