@@ -284,7 +284,26 @@ if "soluciones_resultado" not in st.session_state:
 if "metas_resultado" not in st.session_state:
     st.session_state.metas_resultado = None
 
-if st.button("🚀 Resolver Sistema", type="primary"):
+# Botones de acción global
+col_resolve, col_reset = st.columns([1, 4])
+with col_resolve:
+    resolve_clicked = st.button("🚀 Resolver Sistema", type="primary")
+with col_reset:
+    reset_all_clicked = st.button("🗑️ Resetear todo", type="secondary")
+
+# Lógica de reseteo total
+if reset_all_clicked:
+    keys_to_delete = [k for k in st.session_state.keys()
+                      if k.startswith(("xmin_", "xmax_", "ymin_", "ymax_", "reset_"))]
+    for k in keys_to_delete:
+        del st.session_state[k]
+    st.session_state.condiciones = []
+    st.session_state.soluciones_resultado = None
+    st.session_state.metas_resultado = None
+    st.rerun()
+
+# Lógica de resolución
+if resolve_clicked:
     if not st.session_state.condiciones:
         st.warning("Añade al menos una condición antes de resolver.")
         st.session_state.soluciones_resultado = None
@@ -366,9 +385,9 @@ if st.session_state.soluciones_resultado is not None:
                 key=f"ymax_{idx}"
             )
         with col_btn:
-            reset = st.button("🔄 Auto", key=f"reset_{idx}")
+            reset_range = st.button("🔄 Auto", key=f"reset_{idx}")
 
-        if reset:
+        if reset_range:
             for k in [f"xmin_{idx}", f"xmax_{idx}", f"ymin_{idx}", f"ymax_{idx}"]:
                 if k in st.session_state:
                     del st.session_state[k]
