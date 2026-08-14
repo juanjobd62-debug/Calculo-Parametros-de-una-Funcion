@@ -10,7 +10,10 @@ st.set_page_config(page_title="Calculadora de Parámetros", layout="wide", page_
 
 x, a, b, c, d, e = sp.symbols("x a b c d e")
 PARAM_SYMBOLS = [a, b, c, d, e]
-LOCALS = {"x": x, "a": a, "b": b, "c": c, "d": d, "e": e}
+# Agregamos m y n como posibles símbolos de parámetros para casos especiales como asíntotas oblicuas
+m_obl, n_obl = sp.symbols("m_obl n_obl")
+ALL_PARAM_SYMBOLS = PARAM_SYMBOLS + [m_obl, n_obl]
+LOCALS = {"x": x, "a": a, "b": b, "c": c, "d": d, "e": e, "m_obl": m_obl, "n_obl": n_obl}
 
 
 # ============================================================================
@@ -171,18 +174,14 @@ with col_add:
         # Nueva opción para asíntota oblicua flexible
         if tipo_cond == "Asíntota oblicua (m y n flexibles)":
             # Configurar m
-            vals["m_tipo"] = st.selectbox("Tipo de m", ["Dato (número)", "Incógnita (variable)"], key="inp_m_tipo")
+            vals["m_tipo"] = st.selectbox("Tipo de m", ["Dato (número)", "Incógnita"], key="inp_m_tipo")
             if vals["m_tipo"] == "Dato (número)":
                 vals["m_valor"] = st.text_input("Valor de m", value="1", key="inp_m_valor")
-            else: # Incógnita
-                vals["m_var"] = st.selectbox("Variable para m", [str(p) for p in params_detected], key="inp_m_var")
 
             # Configurar n
-            vals["n_tipo"] = st.selectbox("Tipo de n", ["Dato (número)", "Incógnita (variable)"], key="inp_n_tipo")
+            vals["n_tipo"] = st.selectbox("Tipo de n", ["Dato (número)", "Incógnita"], key="inp_n_tipo")
             if vals["n_tipo"] == "Dato (número)":
                 vals["n_valor"] = st.text_input("Valor de n", value="0", key="inp_n_valor")
-            else: # Incógnita
-                vals["n_var"] = st.selectbox("Variable para n", [str(p) for p in params_detected], key="inp_n_var")
 
 
         if tipo_cond == "Integral definida":
@@ -266,17 +265,15 @@ with col_add:
                 if vals["m_tipo"] == "Dato (número)":
                     m_val = p("m_valor")
                     m_symbol_or_value = m_val
-                else: # Incógnita
-                    m_var_name = vals["m_var"]
-                    m_symbol_or_value = sp.Symbol(m_var_name)
+                else: # Incógnita -> Usamos el símbolo m_obl
+                    m_symbol_or_value = m_obl
                 
                 # Procesar n
                 if vals["n_tipo"] == "Dato (número)":
                     n_val = p("n_valor")
                     n_symbol_or_value = n_val
-                else: # Incógnita
-                    n_var_name = vals["n_var"]
-                    n_symbol_or_value = sp.Symbol(n_var_name)
+                else: # Incógnita -> Usamos el símbolo n_obl
+                    n_symbol_or_value = n_obl
 
                 # Crear las ecuaciones de límite
                 # lim (f(x) / x) = m
@@ -298,9 +295,9 @@ with col_add:
                 
                 meta.update({
                     "m_tipo": vals["m_tipo"],
-                    "m_valor_o_var": str(m_symbol_or_value),
+                    "m_valor_o_simbolo": str(m_symbol_or_value),
                     "n_tipo": vals["n_tipo"],
-                    "n_valor_o_var": str(n_symbol_or_value)
+                    "n_valor_o_simbolo": str(n_symbol_or_value)
                 })
 
             elif tipo_cond == "Integral definida":
@@ -367,10 +364,23 @@ if resolve_clicked:
         st.session_state.soluciones_resultado = None
     else:
         specs = [s for c in st.session_state.condiciones for s in c["specs"]]
+        
+        # Detectar si hay condiciones de oblicua que introducen m_obl o n_obl
+        params_finales = set(params_detected) # Copia los parámetros base
+        for spec in specs:
+            if spec["modo"] in ["limite_oblicuo_m", "limite_oblicuo_n"]:
+                # Si el valor objetivo es uno de nuestros símbolos de oblicua, lo añadimos
+                if spec["valor_objetivo"] == m_obl:
+                    params_finales.add(m_obl)
+                if spec["valor_objetivo"] == n_obl:
+                    params_finales.add(n_obl)
+        
+        params_finales = list(params_finales) # Convertir a lista para resolver
+
         metas = [c["meta"] for c in st.session_state.condiciones]
 
         with st.spinner("Resolviendo sistema simbólico..."):
-            soluciones = resolver_sistema(specs, func, params_detected)
+            soluciones = resolver_sistema(specs, func, params_finales)
 
         if soluciones is None or len(soluciones) == 0:
             st.error("No se encontró solución. Revisa las condiciones o la función.")
@@ -389,18 +399,27 @@ if st.session_state.soluciones_resultado is not None:
     for idx, sol in enumerate(soluciones):
         st.subheader(f"Solución {idx + 1}")
 
+        # Determinar todos los parámetros que deben mostrarse (base + oblicuos si están)
+        all_params_in_sol = set(params_detected)
+        for p in sol.keys():
+            if p in ALL_PARAM_SYMBOLS: # Solo mostrar símbolos reconocidos
+                all_params_in_sol.add(p)
+        
+        # Filtrar solo los que aparecen en la solución
+        params_to_show = [p for p in ALL_PARAM_SYMBOLS if p in all_params_in_sol]
+
         # Tabla de resultados
         tabla_data = {
-            "Parámetro": [str(p) for p in params_detected],
+            "Parámetro": [str(p) for p in params_to_show],
             "Valor Exacto": [
                 str(sp.nsimplify(sol.get(p, sp.Symbol("?"))))
-                for p in params_detected
+                for p in params_to_show
             ],
             "Valor Aprox.": [
                 f"{float(sol[p]):.6g}"
                 if p in sol and sol[p].free_symbols == set()
                 else "-"
-                for p in params_detected
+                for p in params_to_show
             ]
         }
         st.table(tabla_data)
@@ -477,63 +496,63 @@ if st.session_state.soluciones_resultado is not None:
         ))
 
         # Anotaciones sobre la gráfica
-        for m in metas:
-            if m["tipo"] in [
+        for m_meta in metas:
+            if m_meta["tipo"] in [
                 "Punto (x, y)", "Extremo relativo",
                 "Punto de inflexión", "Tangencia con pendiente"
-            ] and "x" in m:
+            ] and "x" in m_meta:
                 try:
-                    px = float(m["x"])
-                    py = float(m.get("y", func_final.subs(x, m["x"])))
+                    px = float(m_meta["x"])
+                    py = float(m_meta.get("y", func_final.subs(x, m_meta["x"])))
                     fig.add_trace(go.Scatter(
                         x=[px], y=[py], mode="markers",
                         marker=dict(size=12, color="#f9e2af", symbol="circle"),
-                        name=f"{m['tipo']} ({px:.2g}, {py:.2g})"
+                        name=f"{m_meta['tipo']} ({px:.2g}, {py:.2g})"
                     ))
                 except Exception:
                     pass
 
-            if m["tipo"] == "Asíntota vertical" and "x" in m:
-                xv = float(m["x"])
+            if m_meta["tipo"] == "Asíntota vertical" and "x" in m_meta:
+                xv = float(m_meta["x"])
                 fig.add_vline(
                     x=xv, line_dash="dash", line_color="#f38ba8",
                     annotation_text=f"x={xv:.2g}", annotation_position="top right"
                 )
 
-            if m["tipo"] == "Asíntota horizontal" and "y" in m:
-                yh = float(m["y"])
+            if m_meta["tipo"] == "Asíntota horizontal" and "y" in m_meta:
+                yh = float(m_meta["y"])
                 fig.add_hline(
                     y=yh, line_dash="dash", line_color="#a6e3a1",
                     annotation_text=f"y={yh:.2g}", annotation_position="bottom right"
                 )
 
             # Mostrar asíntota oblicua si es del tipo correcto
-            if m["tipo"] == "Asíntota oblicua (m y n flexibles)":
+            if m_meta["tipo"] == "Asíntota oblicua (m y n flexibles)":
                 # Obtenemos los valores de m y n de la solución final, basados en los metadatos originales
-                m_tipo = m.get("m_tipo")
-                m_orig = m.get("m_valor_o_var")
-                n_tipo = m.get("n_tipo")
-                n_orig = m.get("n_valor_o_var")
+                m_tipo = m_meta.get("m_tipo")
+                m_orig_str = m_meta.get("m_valor_o_simbolo")
+                n_tipo = m_meta.get("n_tipo")
+                n_orig_str = m_meta.get("n_valor_o_simbolo")
 
                 # Resolver el valor real de m
-                if m_tipo == "Incógnita (variable)":
-                    m_sym = sp.Symbol(m_orig)
-                    if m_sym in sol:
-                        mm = float(sol[m_sym])
+                if m_tipo == "Incógnita":
+                    # Buscar en la solución el valor de m_obl
+                    if m_obl in sol:
+                        mm = float(sol[m_obl])
                     else:
                         continue # No se ha resuelto esta variable aún
                 else: # Dato (número)
-                    mm = float(sp.sympify(m_orig))
+                    mm = float(sp.sympify(m_orig_str))
 
                 # Resolver el valor real de n
-                if n_tipo == "Incógnita (variable)":
-                    n_sym = sp.Symbol(n_orig)
-                    if n_sym in sol:
-                        nn = float(sol[n_sym])
+                if n_tipo == "Incógnita":
+                     # Buscar en la solución el valor de n_obl
+                    if n_obl in sol:
+                        nn = float(sol[n_obl])
                     else:
                         continue # No se ha resuelto esta variable aún
                 else: # Dato (número)
-                    nn = float(sp.sympify(n_orig))
+                    nn = float(sp.sympify(n_orig_str))
 
                 # Graficar la recta y = mx + n
                 yy_ob = mm * xs_plot + nn
@@ -543,11 +562,11 @@ if st.session_state.soluciones_resultado is not None:
                     line=dict(color="#a6e3a1", width=1.5, dash="dash")
                 ))
 
-            if m["tipo"] == "Tangencia con pendiente" and "x" in m and "m" in m:
+            if m_meta["tipo"] == "Tangencia con pendiente" and "x" in m_meta and "m" in m_meta:
                 try:
-                    x0_t = float(m["x"])
-                    m_t = float(m["m"])
-                    y0_t = float(m.get("y", func_final.subs(x, m["x"])))
+                    x0_t = float(m_meta["x"])
+                    m_t = float(m_meta["m"])
+                    y0_t = float(m_meta.get("y", func_final.subs(x, m_meta["x"])))
                     yy_tan = m_t * (xs_plot - x0_t) + y0_t
                     fig.add_trace(go.Scatter(
                         x=xs_plot, y=yy_tan, mode="lines",
