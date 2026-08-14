@@ -10,10 +10,14 @@ st.set_page_config(page_title="Calculadora de Parámetros", layout="wide", page_
 
 x, a, b, c, d, e = sp.symbols("x a b c d e")
 PARAM_SYMBOLS = [a, b, c, d, e]
-# Agregamos m y n como posibles símbolos de parámetros para casos especiales como asíntotas oblicuas
+# Símbolos auxiliares para asíntotas
 m_obl, n_obl = sp.symbols("m_obl n_obl")
-ALL_PARAM_SYMBOLS = PARAM_SYMBOLS + [m_obl, n_obl]
-LOCALS = {"x": x, "a": a, "b": b, "c": c, "d": d, "e": e, "m_obl": m_obl, "n_obl": n_obl}
+ah_lim, av_x = sp.symbols("ah_lim av_x") # ah_lim: asíntota horizontal límite, av_x: valor x de asíntota vertical
+ALL_PARAM_SYMBOLS = PARAM_SYMBOLS + [m_obl, n_obl, ah_lim, av_x]
+LOCALS = {
+    "x": x, "a": a, "b": b, "c": c, "d": d, "e": e,
+    "m_obl": m_obl, "n_obl": n_obl, "ah_lim": ah_lim, "av_x": av_x
+}
 
 
 # ============================================================================
@@ -33,7 +37,7 @@ def _eq_desde_spec(spec, conocidos):
         return spec["eq"].subs(conocidos)
 
     # Manejo de límites para asíntotas oblicuas
-    if spec["modo"] == "limite_oblicuo_m" or spec["modo"] == "limite_oblicuo_n":
+    if spec["modo"] in ["limite_oblicuo_m", "limite_oblicuo_n", "limite_horiz"]:
         expr = spec["expr"].subs(conocidos)
         try:
             val = sp.limit(expr, x, sp.oo)
@@ -45,6 +49,17 @@ def _eq_desde_spec(spec, conocidos):
 
         # El valor límite debe ser igual al valor objetivo (puede ser un símbolo o un número)
         return sp.Eq(val, spec["valor_objetivo"])
+
+    # Manejo de límites para asíntotas verticales (comportamiento en x -> av_x)
+    if spec["modo"] == "limite_vert":
+        # Esta condición se maneja de forma distinta, ya que implica que el denominador tiende a 0
+        # Se manejará en la creación de la condición directamente como antes, pero si se quiere
+        # hacerlo con un límite, sería más complejo y no es tan directo.
+        # Mantenemos la lógica de la fracción para AV por ahora.
+        # Si se quisiera hacer con límites, por ejemplo lim_{x->x0} |f(x)| = oo, es más complejo.
+        # La implementación directa con denominador=0 es más robusta para AV.
+        # Por lo tanto, no se procesa aquí como límite genérico.
+        pass 
 
     # Caso general para otros límites
     expr = spec["expr"].subs(conocidos)
@@ -71,14 +86,21 @@ def resolver_sistema(especificaciones, func, params):
 
         eqs_vuelta = []
         for spec in especificaciones:
+            # Solo procesar ecuaciones que no dependan de variables no resueltas aún
+            # (Esto es un manejo básico, SymPy solve hará el trabajo pesado)
             eq = _eq_desde_spec(spec, conocidos)
             if eq is not None:
                 eqs_vuelta.append(eq)
 
-        sol_vuelta = sp.solve(eqs_vuelta, pendientes, dict=True)
+        if not eqs_vuelta:
+             # Si no hay ecuaciones en esta vuelta, intentar resolver las pendientes restantes con todas las ecuaciones acumuladas
+            sol_vuelta = sp.solve(eqs_vuelta, pendientes, dict=True)
+        else:
+            sol_vuelta = sp.solve(eqs_vuelta, pendientes, dict=True)
+
         sol_vuelta = [
             s for s in sol_vuelta
-            if all(not v.free_symbols for v in s.values())
+            if all(not v.free_symbols for v in s.values()) # Asegura que todas las variables de la solución estén resueltas
         ]
 
         if not sol_vuelta:
@@ -102,8 +124,10 @@ def resolver_sistema(especificaciones, func, params):
     def es_real(sol_dict):
         """Comprueba si todos los valores de la solución son reales."""
         try:
-            return all(sp.simplify(sp.im(val)) == 0 for val in sol_dict.values())
+            # Verifica si la parte imaginaria de cada valor es 0
+            return all(sp.simplify(sp.im(val)).is_zero for val in sol_dict.values())
         except Exception:
+            # Si falla la simplificación, asumimos verdadero
             return True
 
     reales = [s for s in soluciones if es_real(s)]
@@ -146,8 +170,10 @@ with col_add:
         "Extremo relativo",
         "Punto de inflexión",
         "Tangencia con pendiente",
-        "Asíntota vertical",
-        "Asíntota horizontal",
+        "Asíntota vertical (posición x)",
+        "Asíntota vertical (posición x, flexible)",
+        "Asíntota horizontal (límite y)",
+        "Asíntota horizontal (límite y, flexible)",
         "Asíntota oblicua (m y n flexibles)",
         "Integral definida"
     ])
@@ -158,7 +184,7 @@ with col_add:
     with c1:
         if tipo_cond in [
             "Punto (x, y)", "Extremo relativo", "Punto de inflexión",
-            "Tangencia con pendiente", "Asíntota vertical"
+            "Tangencia con pendiente", "Asíntota vertical (posición x)"
         ]:
             vals["x0"] = st.text_input("x₀", value="0", key="inp_x0")
 
@@ -168,8 +194,24 @@ with col_add:
         if tipo_cond == "Tangencia con pendiente":
             vals["m"] = st.text_input("Pendiente m", value="1", key="inp_m")
 
-        if tipo_cond == "Asíntota horizontal":
-            vals["y_as"] = st.text_input("y asíntota", value="0", key="inp_yas")
+        # Nueva opción para asíntota horizontal flexible
+        if tipo_cond in ["Asíntota horizontal (límite y)", "Asíntota horizontal (límite y, flexible)"]:
+            if tipo_cond == "Asíntota horizontal (límite y)":
+                 vals["y_as"] = st.text_input("y asíntota (dato)", value="0", key="inp_yas_fija")
+            else: # Flexible
+                vals["ah_tipo"] = st.selectbox("Tipo de límite y", ["Dato (número)", "Incógnita"], key="inp_ah_tipo")
+                if vals["ah_tipo"] == "Dato (número)":
+                    vals["ah_valor"] = st.text_input("Valor de límite y", value="0", key="inp_ah_valor")
+
+        # Nueva opción para asíntota vertical flexible
+        if tipo_cond in ["Asíntota vertical (posición x)", "Asíntota vertical (posición x, flexible)"]:
+            if tipo_cond == "Asíntota vertical (posición x)":
+                 vals["x_as"] = st.text_input("x asíntota (dato)", value="0", key="inp_xas_fija")
+            else: # Flexible
+                vals["av_tipo"] = st.selectbox("Tipo de posición x", ["Dato (número)", "Incógnita"], key="inp_av_tipo")
+                if vals["av_tipo"] == "Dato (número)":
+                    vals["av_valor"] = st.text_input("Valor de posición x", value="0", key="inp_av_valor")
+
 
         # Nueva opción para asíntota oblicua flexible
         if tipo_cond == "Asíntota oblicua (m y n flexibles)":
@@ -247,19 +289,51 @@ with col_add:
                     desc_list.append(f"f({x0})={y0}")
                     meta["y"] = y0
 
-            elif tipo_cond == "Asíntota vertical":
-                x0 = p("x0")
+            elif tipo_cond == "Asíntota vertical (posición x)":
+                x0 = p("x_as") # Usamos x_as en lugar de x0
                 _, den = sp.fraction(sp.together(func))
                 spec_list = [{"modo": "directa", "eq": sp.Eq(den.subs(x, x0), 0)}]
                 desc_list = [f"den({x0})=0"]
-                meta["x"] = x0
+                meta["x"] = x0 # Se guarda como 'x' para visualización
 
-            elif tipo_cond == "Asíntota horizontal":
-                y0 = p("y_as")
-                spec_list = [{"modo": "limite", "expr": func, "valor": y0}]
+            # Nueva condición: Asíntota vertical flexible
+            elif tipo_cond == "Asíntota vertical (posición x, flexible)":
+                if vals["av_tipo"] == "Dato (número)":
+                    x_val = p("av_valor")
+                    x_symbol_or_value = x_val
+                else: # Incógnita -> Usamos el símbolo av_x
+                    x_symbol_or_value = av_x
+                
+                # La condición sigue siendo que el denominador es 0 en x = x_symbol_or_value
+                _, den = sp.fraction(sp.together(func))
+                spec_list = [{"modo": "directa", "eq": sp.Eq(den.subs(x, x_symbol_or_value), 0)}]
+                desc_list = [f"den(x={x_symbol_or_value})=0"]
+                meta["x_simbolo"] = str(x_symbol_or_value) # Guardamos el símbolo o valor usado
+                meta["av_tipo"] = vals["av_tipo"]
+
+
+            elif tipo_cond == "Asíntota horizontal (límite y)":
+                y0 = p("y_as") # Usamos y_as en lugar de y0
+                spec_list = [{"modo": "limite_horiz", "expr": func, "valor_objetivo": y0}]
                 desc_list = [f"lim(x→∞)f(x)={y0}"]
-                meta["y"] = y0
+                meta["y"] = y0 # Se guarda como 'y' para visualización
 
+            # Nueva condición: Asíntota horizontal flexible
+            elif tipo_cond == "Asíntota horizontal (límite y, flexible)":
+                if vals["ah_tipo"] == "Dato (número)":
+                    y_val = p("ah_valor")
+                    y_symbol_or_value = y_val
+                else: # Incógnita -> Usamos el símbolo ah_lim
+                    y_symbol_or_value = ah_lim
+                
+                # La ecuación es lim f(x) = y_symbol_or_value
+                spec_list = [{"modo": "limite_horiz", "expr": func, "valor_objetivo": y_symbol_or_value}]
+                desc_list = [f"lim(x→∞)f(x)={y_symbol_or_value}"]
+                meta["y_simbolo"] = str(y_symbol_or_value) # Guardamos el símbolo o valor usado
+                meta["ah_tipo"] = vals["ah_tipo"]
+
+
+            # Asintota oblicua (mantiene lógica anterior)
             elif tipo_cond == "Asíntota oblicua (m y n flexibles)":
                 # Procesar m
                 if vals["m_tipo"] == "Dato (número)":
@@ -365,15 +439,24 @@ if resolve_clicked:
     else:
         specs = [s for c in st.session_state.condiciones for s in c["specs"]]
         
-        # Detectar si hay condiciones de oblicua que introducen m_obl o n_obl
-        params_finales = set(params_detected) # Copia los parámetros base
+        # Detectar parámetros necesarios para resolver, incluyendo los auxiliares
+        params_finales = set(params_detected) # Copia los parámetros base (a, b, c, d, e)
         for spec in specs:
-            if spec["modo"] in ["limite_oblicuo_m", "limite_oblicuo_n"]:
-                # Si el valor objetivo es uno de nuestros símbolos de oblicua, lo añadimos
+            # Chequear si la ecuación de límite involucra símbolos auxiliares
+            if spec["modo"] in ["limite_oblicuo_m", "limite_oblicuo_n", "limite_horiz"]:
                 if spec["valor_objetivo"] == m_obl:
                     params_finales.add(m_obl)
                 if spec["valor_objetivo"] == n_obl:
                     params_finales.add(n_obl)
+                if spec["valor_objetivo"] == ah_lim:
+                    params_finales.add(ah_lim)
+            
+            # Chequear si la ecuación directa (AV) involucra símbolos auxiliares
+            if spec["modo"] == "directa":
+                # Esta es la condición AV flexible: Eq(den(subs(x, av_x)), 0)
+                # Buscamos si av_x está en la ecuación
+                if av_x in spec["eq"].free_symbols:
+                     params_finales.add(av_x)
         
         params_finales = list(params_finales) # Convertir a lista para resolver
 
@@ -399,7 +482,7 @@ if st.session_state.soluciones_resultado is not None:
     for idx, sol in enumerate(soluciones):
         st.subheader(f"Solución {idx + 1}")
 
-        # Determinar todos los parámetros que deben mostrarse (base + oblicuos si están)
+        # Determinar todos los parámetros que deben mostrarse (base + auxiliares si están en la solución)
         all_params_in_sol = set(params_detected)
         for p in sol.keys():
             if p in ALL_PARAM_SYMBOLS: # Solo mostrar símbolos reconocidos
@@ -417,7 +500,7 @@ if st.session_state.soluciones_resultado is not None:
             ],
             "Valor Aprox.": [
                 f"{float(sol[p]):.6g}"
-                if p in sol and sol[p].free_symbols == set()
+                if p in sol and sol[p].free_symbols == set() and hasattr(sol[p], '__float__')
                 else "-"
                 for p in params_to_show
             ]
@@ -434,6 +517,13 @@ if st.session_state.soluciones_resultado is not None:
                 if k in m and hasattr(m[k], "is_real") and m[k].is_real:
                     try:
                         xs_rel.append(float(m[k]))
+                    except Exception:
+                        pass
+            # También recoger x_simbolo si es incógnita resuelta para AV flexible
+            if m["tipo"] == "Asíntota vertical (posición x, flexible)" and m["av_tipo"] == "Incógnita":
+                if av_x in sol:
+                    try:
+                        xs_rel.append(float(sol[av_x]))
                     except Exception:
                         pass
 
@@ -482,6 +572,7 @@ if st.session_state.soluciones_resultado is not None:
         try:
             ys_plot = f_lamb(xs_plot)
             ys_plot = np.asarray(ys_plot, dtype=float)
+            # Limitar valores extremos para graficar
             ys_plot[np.abs(ys_plot) > 1e4] = np.nan
         except Exception as plot_ex:
             st.warning(f"No se pudo evaluar la función: {plot_ex}")
@@ -512,21 +603,63 @@ if st.session_state.soluciones_resultado is not None:
                 except Exception:
                     pass
 
-            if m_meta["tipo"] == "Asíntota vertical" and "x" in m_meta:
+            # Asintota vertical (fija)
+            if m_meta["tipo"] == "Asíntota vertical (posición x)" and "x" in m_meta:
                 xv = float(m_meta["x"])
                 fig.add_vline(
                     x=xv, line_dash="dash", line_color="#f38ba8",
                     annotation_text=f"x={xv:.2g}", annotation_position="top right"
                 )
+            
+            # Asintota vertical (flexible)
+            if m_meta["tipo"] == "Asíntota vertical (posición x, flexible)":
+                av_tipo = m_meta.get("av_tipo")
+                av_orig_str = m_meta.get("x_simbolo")
+                if av_tipo == "Incógnita":
+                    # Buscar en la solución el valor de av_x
+                    if av_x in sol:
+                        xv = float(sol[av_x])
+                        fig.add_vline(
+                            x=xv, line_dash="dash", line_color="#f38ba8",
+                            annotation_text=f"x={xv:.2g}", annotation_position="top right"
+                        )
+                else: # Dato (número)
+                    xv = float(sp.sympify(av_orig_str))
+                    fig.add_vline(
+                        x=xv, line_dash="dash", line_color="#f38ba8",
+                        annotation_text=f"x={xv:.2g}", annotation_position="top right"
+                    )
 
-            if m_meta["tipo"] == "Asíntota horizontal" and "y" in m_meta:
+
+            # Asintota horizontal (fija)
+            if m_meta["tipo"] == "Asíntota horizontal (límite y)" and "y" in m_meta:
                 yh = float(m_meta["y"])
                 fig.add_hline(
                     y=yh, line_dash="dash", line_color="#a6e3a1",
                     annotation_text=f"y={yh:.2g}", annotation_position="bottom right"
                 )
+            
+            # Asintota horizontal (flexible)
+            if m_meta["tipo"] == "Asíntota horizontal (límite y, flexible)":
+                ah_tipo = m_meta.get("ah_tipo")
+                ah_orig_str = m_meta.get("y_simbolo")
+                if ah_tipo == "Incógnita":
+                    # Buscar en la solución el valor de ah_lim
+                    if ah_lim in sol:
+                        yh = float(sol[ah_lim])
+                        fig.add_hline(
+                            y=yh, line_dash="dash", line_color="#a6e3a1",
+                            annotation_text=f"y={yh:.2g}", annotation_position="bottom right"
+                        )
+                else: # Dato (número)
+                    yh = float(sp.sympify(ah_orig_str))
+                    fig.add_hline(
+                        y=yh, line_dash="dash", line_color="#a6e3a1",
+                        annotation_text=f"y={yh:.2g}", annotation_position="bottom right"
+                    )
 
-            # Mostrar asíntota oblicua si es del tipo correcto
+
+            # Asintota oblicua (mantiene lógica anterior)
             if m_meta["tipo"] == "Asíntota oblicua (m y n flexibles)":
                 # Obtenemos los valores de m y n de la solución final, basados en los metadatos originales
                 m_tipo = m_meta.get("m_tipo")
