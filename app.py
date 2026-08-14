@@ -40,7 +40,8 @@ def _eq_desde_spec(spec, conocidos):
         if _expr_indeterminada(val):
             return None
 
-        return sp.Eq(val, spec["valor"])
+        # El valor límite debe ser igual al valor objetivo (puede ser un símbolo o un número)
+        return sp.Eq(val, spec["valor_objetivo"])
 
     # Caso general para otros límites
     expr = spec["expr"].subs(conocidos)
@@ -144,8 +145,7 @@ with col_add:
         "Tangencia con pendiente",
         "Asíntota vertical",
         "Asíntota horizontal",
-        "Asíntota oblicua (m y n como incógnitas)",
-        "Asíntota oblicua (m y n dados)",
+        "Asíntota oblicua (m y n flexibles)",
         "Integral definida"
     ])
 
@@ -168,14 +168,22 @@ with col_add:
         if tipo_cond == "Asíntota horizontal":
             vals["y_as"] = st.text_input("y asíntota", value="0", key="inp_yas")
 
-        # Nuevas opciones para asíntota oblicua
-        if tipo_cond == "Asíntota oblicua (m y n dados)":
-            vals["m_ob"] = st.text_input("Pendiente m (dato)", value="1", key="inp_mob_dato")
-            vals["n_ob"] = st.text_input("Ordenada n (dato)", value="0", key="inp_nob_dato")
+        # Nueva opción para asíntota oblicua flexible
+        if tipo_cond == "Asíntota oblicua (m y n flexibles)":
+            # Configurar m
+            vals["m_tipo"] = st.selectbox("Tipo de m", ["Dato (número)", "Incógnita (variable)"], key="inp_m_tipo")
+            if vals["m_tipo"] == "Dato (número)":
+                vals["m_valor"] = st.text_input("Valor de m", value="1", key="inp_m_valor")
+            else: # Incógnita
+                vals["m_var"] = st.selectbox("Variable para m", [str(p) for p in params_detected], key="inp_m_var")
 
-        if tipo_cond == "Asíntota oblicua (m y n como incógnitas)":
-            vals["m_ob_var"] = st.selectbox("Variable para m", [str(p) for p in params_detected] + ["ninguna"], key="inp_mob_var")
-            vals["n_ob_var"] = st.selectbox("Variable para n", [str(p) for p in params_detected] + ["ninguna"], key="inp_nob_var")
+            # Configurar n
+            vals["n_tipo"] = st.selectbox("Tipo de n", ["Dato (número)", "Incógnita (variable)"], key="inp_n_tipo")
+            if vals["n_tipo"] == "Dato (número)":
+                vals["n_valor"] = st.text_input("Valor de n", value="0", key="inp_n_valor")
+            else: # Incógnita
+                vals["n_var"] = st.selectbox("Variable para n", [str(p) for p in params_detected], key="inp_n_var")
+
 
         if tipo_cond == "Integral definida":
             vals["x1"] = st.text_input("Lím. inferior", value="0", key="inp_x1")
@@ -253,47 +261,47 @@ with col_add:
                 desc_list = [f"lim(x→∞)f(x)={y0}"]
                 meta["y"] = y0
 
-            elif tipo_cond == "Asíntota oblicua (m y n dados)":
-                m_val, n_val = p("m_ob"), p("n_ob")
-                spec_list = [
-                    {"modo": "limite", "expr": func / x, "valor": m_val},
-                    {"modo": "limite", "expr": func - m_val * x, "valor": n_val},
-                ]
-                desc_list = [
-                    f"lim f(x)/x={m_val}",
-                    f"lim (f(x)-{m_val}x)={n_val}"
-                ]
-                meta.update({"m": m_val, "n": n_val})
+            elif tipo_cond == "Asíntota oblicua (m y n flexibles)":
+                # Procesar m
+                if vals["m_tipo"] == "Dato (número)":
+                    m_val = p("m_valor")
+                    m_symbol_or_value = m_val
+                else: # Incógnita
+                    m_var_name = vals["m_var"]
+                    m_symbol_or_value = sp.Symbol(m_var_name)
+                
+                # Procesar n
+                if vals["n_tipo"] == "Dato (número)":
+                    n_val = p("n_valor")
+                    n_symbol_or_value = n_val
+                else: # Incógnita
+                    n_var_name = vals["n_var"]
+                    n_symbol_or_value = sp.Symbol(n_var_name)
 
-            elif tipo_cond == "Asíntota oblicua (m y n como incógnitas)":
-                # Aquí manejamos que m y n sean variables a resolver
-                m_var_name = vals.get("m_ob_var", "ninguna")
-                n_var_name = vals.get("n_ob_var", "ninguna")
+                # Crear las ecuaciones de límite
+                # lim (f(x) / x) = m
+                spec_list.append({
+                    "modo": "limite_oblicuo_m",
+                    "expr": func / x,
+                    "valor_objetivo": m_symbol_or_value
+                })
+                desc_list.append(f"lim f(x)/x = m ({m_symbol_or_value})")
+
+                # lim (f(x) - m*x) = n
+                expr_n = func - m_symbol_or_value * x
+                spec_list.append({
+                    "modo": "limite_oblicuo_n",
+                    "expr": expr_n,
+                    "valor_objetivo": n_symbol_or_value
+                })
+                desc_list.append(f"lim (f(x) - m*x) = n ({n_symbol_or_value})")
                 
-                # Convertimos los nombres de las variables a símbolos
-                m_var = sp.Symbol(m_var_name) if m_var_name != "ninguna" and m_var_name in [str(p) for p in PARAM_SYMBOLS] else None
-                n_var = sp.Symbol(n_var_name) if n_var_name != "ninguna" and n_var_name in [str(p) for p in PARAM_SYMBOLS] else None
-                
-                if m_var:
-                    # lim (f(x)/x) = m
-                    spec_list.append({"modo": "limite_oblicuo_m", "expr": func / x, "valor": m_var})
-                    desc_list.append(f"lim f(x)/x=m ({m_var})")
-                    
-                if n_var:
-                    # lim (f(x) - m*x) = n
-                    # Necesitamos construir esta expresión sabiendo que m puede ser una variable
-                    # Si m no es una variable, usamos el valor calculado de m
-                    # Para este caso, asumiremos que si m_var es None, no se puede usar aún
-                    if m_var:
-                        expr_n = func - m_var * x
-                    else:
-                        # Si m no es una variable, no podemos formular esta ecuación
-                        st.warning("Para calcular 'n', también debe seleccionarse 'm' como variable.")
-                        st.rerun()
-                    spec_list.append({"modo": "limite_oblicuo_n", "expr": expr_n, "valor": n_var})
-                    desc_list.append(f"lim (f(x)-m*x)=n ({n_var})")
-                    
-                meta.update({"m_var": str(m_var) if m_var else None, "n_var": str(n_var) if n_var else None})
+                meta.update({
+                    "m_tipo": vals["m_tipo"],
+                    "m_valor_o_var": str(m_symbol_or_value),
+                    "n_tipo": vals["n_tipo"],
+                    "n_valor_o_var": str(n_symbol_or_value)
+                })
 
             elif tipo_cond == "Integral definida":
                 x1, x2, vi = p("x1"), p("x2"), p("val_int")
@@ -499,29 +507,35 @@ if st.session_state.soluciones_resultado is not None:
                     annotation_text=f"y={yh:.2g}", annotation_position="bottom right"
                 )
 
-            # Mostrar asíntota oblicua si ya se han calculado m y n
-            if m["tipo"] == "Asíntota oblicua (m y n dados)" or m["tipo"] == "Asíntota oblicua (m y n como incógnitas)":
-                # Obtenemos los valores de m y n de la solución final
-                if "m" in m: # Caso "dados"
-                    mm = float(m["m"])
-                    nn = float(m["n"])
-                elif m["tipo"] == "Asíntota oblicua (m y n como incógnitas)":
-                    # Extraemos los valores de m y n de la solución
-                    m_var_str = m.get("m_var")
-                    n_var_str = m.get("n_var")
-                    if m_var_str and n_var_str:
-                        m_sym = sp.Symbol(m_var_str)
-                        n_sym = sp.Symbol(n_var_str)
-                        if m_sym in sol and n_sym in sol:
-                            mm = float(sol[m_sym])
-                            nn = float(sol[n_sym])
-                        else:
-                            continue # No se han resuelto aún
+            # Mostrar asíntota oblicua si es del tipo correcto
+            if m["tipo"] == "Asíntota oblicua (m y n flexibles)":
+                # Obtenemos los valores de m y n de la solución final, basados en los metadatos originales
+                m_tipo = m.get("m_tipo")
+                m_orig = m.get("m_valor_o_var")
+                n_tipo = m.get("n_tipo")
+                n_orig = m.get("n_valor_o_var")
+
+                # Resolver el valor real de m
+                if m_tipo == "Incógnita (variable)":
+                    m_sym = sp.Symbol(m_orig)
+                    if m_sym in sol:
+                        mm = float(sol[m_sym])
                     else:
-                        continue
-                else:
-                    continue
-                    
+                        continue # No se ha resuelto esta variable aún
+                else: # Dato (número)
+                    mm = float(sp.sympify(m_orig))
+
+                # Resolver el valor real de n
+                if n_tipo == "Incógnita (variable)":
+                    n_sym = sp.Symbol(n_orig)
+                    if n_sym in sol:
+                        nn = float(sol[n_sym])
+                    else:
+                        continue # No se ha resuelto esta variable aún
+                else: # Dato (número)
+                    nn = float(sp.sympify(n_orig))
+
+                # Graficar la recta y = mx + n
                 yy_ob = mm * xs_plot + nn
                 fig.add_trace(go.Scatter(
                     x=xs_plot, y=yy_ob, mode="lines",
@@ -574,4 +588,3 @@ if st.session_state.soluciones_resultado is not None:
             fig.update_yaxes(range=y_range)
 
         st.plotly_chart(fig, use_container_width=True)
-
