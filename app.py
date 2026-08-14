@@ -29,6 +29,20 @@ def _eq_desde_spec(spec, conocidos):
     if spec["modo"] == "directa":
         return spec["eq"].subs(conocidos)
 
+    # Manejo de límites para asíntotas oblicuas
+    if spec["modo"] == "limite_oblicuo_m" or spec["modo"] == "limite_oblicuo_n":
+        expr = spec["expr"].subs(conocidos)
+        try:
+            val = sp.limit(expr, x, sp.oo)
+        except Exception:
+            return None
+
+        if _expr_indeterminada(val):
+            return None
+
+        return sp.Eq(val, spec["valor"])
+
+    # Caso general para otros límites
     expr = spec["expr"].subs(conocidos)
     try:
         val = sp.limit(expr, x, sp.oo)
@@ -130,7 +144,8 @@ with col_add:
         "Tangencia con pendiente",
         "Asíntota vertical",
         "Asíntota horizontal",
-        "Asíntota oblicua (límites)",
+        "Asíntota oblicua (m y n como incógnitas)",
+        "Asíntota oblicua (m y n dados)",
         "Integral definida"
     ])
 
@@ -153,9 +168,14 @@ with col_add:
         if tipo_cond == "Asíntota horizontal":
             vals["y_as"] = st.text_input("y asíntota", value="0", key="inp_yas")
 
-        if tipo_cond == "Asíntota oblicua (límites)":
-            vals["m_ob"] = st.text_input("Pendiente m", value="1", key="inp_mob")
-            vals["n_ob"] = st.text_input("Ordenada n", value="0", key="inp_nob")
+        # Nuevas opciones para asíntota oblicua
+        if tipo_cond == "Asíntota oblicua (m y n dados)":
+            vals["m_ob"] = st.text_input("Pendiente m (dato)", value="1", key="inp_mob_dato")
+            vals["n_ob"] = st.text_input("Ordenada n (dato)", value="0", key="inp_nob_dato")
+
+        if tipo_cond == "Asíntota oblicua (m y n como incógnitas)":
+            vals["m_ob_var"] = st.selectbox("Variable para m", [str(p) for p in params_detected] + ["ninguna"], key="inp_mob_var")
+            vals["n_ob_var"] = st.selectbox("Variable para n", [str(p) for p in params_detected] + ["ninguna"], key="inp_nob_var")
 
         if tipo_cond == "Integral definida":
             vals["x1"] = st.text_input("Lím. inferior", value="0", key="inp_x1")
@@ -233,7 +253,7 @@ with col_add:
                 desc_list = [f"lim(x→∞)f(x)={y0}"]
                 meta["y"] = y0
 
-            elif tipo_cond == "Asíntota oblicua (límites)":
+            elif tipo_cond == "Asíntota oblicua (m y n dados)":
                 m_val, n_val = p("m_ob"), p("n_ob")
                 spec_list = [
                     {"modo": "limite", "expr": func / x, "valor": m_val},
@@ -244,6 +264,36 @@ with col_add:
                     f"lim (f(x)-{m_val}x)={n_val}"
                 ]
                 meta.update({"m": m_val, "n": n_val})
+
+            elif tipo_cond == "Asíntota oblicua (m y n como incógnitas)":
+                # Aquí manejamos que m y n sean variables a resolver
+                m_var_name = vals.get("m_ob_var", "ninguna")
+                n_var_name = vals.get("n_ob_var", "ninguna")
+                
+                # Convertimos los nombres de las variables a símbolos
+                m_var = sp.Symbol(m_var_name) if m_var_name != "ninguna" and m_var_name in [str(p) for p in PARAM_SYMBOLS] else None
+                n_var = sp.Symbol(n_var_name) if n_var_name != "ninguna" and n_var_name in [str(p) for p in PARAM_SYMBOLS] else None
+                
+                if m_var:
+                    # lim (f(x)/x) = m
+                    spec_list.append({"modo": "limite_oblicuo_m", "expr": func / x, "valor": m_var})
+                    desc_list.append(f"lim f(x)/x=m ({m_var})")
+                    
+                if n_var:
+                    # lim (f(x) - m*x) = n
+                    # Necesitamos construir esta expresión sabiendo que m puede ser una variable
+                    # Si m no es una variable, usamos el valor calculado de m
+                    # Para este caso, asumiremos que si m_var es None, no se puede usar aún
+                    if m_var:
+                        expr_n = func - m_var * x
+                    else:
+                        # Si m no es una variable, no podemos formular esta ecuación
+                        st.warning("Para calcular 'n', también debe seleccionarse 'm' como variable.")
+                        st.rerun()
+                    spec_list.append({"modo": "limite_oblicuo_n", "expr": expr_n, "valor": n_var})
+                    desc_list.append(f"lim (f(x)-m*x)=n ({n_var})")
+                    
+                meta.update({"m_var": str(m_var) if m_var else None, "n_var": str(n_var) if n_var else None})
 
             elif tipo_cond == "Integral definida":
                 x1, x2, vi = p("x1"), p("x2"), p("val_int")
@@ -449,8 +499,29 @@ if st.session_state.soluciones_resultado is not None:
                     annotation_text=f"y={yh:.2g}", annotation_position="bottom right"
                 )
 
-            if m["tipo"] == "Asíntota oblicua (límites)":
-                mm, nn = float(m["m"]), float(m["n"])
+            # Mostrar asíntota oblicua si ya se han calculado m y n
+            if m["tipo"] == "Asíntota oblicua (m y n dados)" or m["tipo"] == "Asíntota oblicua (m y n como incógnitas)":
+                # Obtenemos los valores de m y n de la solución final
+                if "m" in m: # Caso "dados"
+                    mm = float(m["m"])
+                    nn = float(m["n"])
+                elif m["tipo"] == "Asíntota oblicua (m y n como incógnitas)":
+                    # Extraemos los valores de m y n de la solución
+                    m_var_str = m.get("m_var")
+                    n_var_str = m.get("n_var")
+                    if m_var_str and n_var_str:
+                        m_sym = sp.Symbol(m_var_str)
+                        n_sym = sp.Symbol(n_var_str)
+                        if m_sym in sol and n_sym in sol:
+                            mm = float(sol[m_sym])
+                            nn = float(sol[n_sym])
+                        else:
+                            continue # No se han resuelto aún
+                    else:
+                        continue
+                else:
+                    continue
+                    
                 yy_ob = mm * xs_plot + nn
                 fig.add_trace(go.Scatter(
                     x=xs_plot, y=yy_ob, mode="lines",
@@ -503,3 +574,4 @@ if st.session_state.soluciones_resultado is not None:
             fig.update_yaxes(range=y_range)
 
         st.plotly_chart(fig, use_container_width=True)
+
